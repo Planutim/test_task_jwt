@@ -48,12 +48,13 @@ func main() {
 	}
 
 	e := echo.New()
-	th := handlers.NewTokenHandler()
+	tokenHandler := handlers.NewTokenHandler()
 
 	e.Use(middleware.Logger())
 	e.Use(middleware.Recover())
 
-	e.POST("/token/:id", th.GetToken)
+	e.POST("/token", tokenHandler.GetToken)
+	e.POST("/token/refresh", tokenHandler.RefreshToken)
 
 	e.Logger.Fatal(e.Start(":" + os.Getenv("APP_PORT")))
 }
