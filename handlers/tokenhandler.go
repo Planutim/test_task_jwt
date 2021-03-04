@@ -43,7 +43,7 @@ func (t *TokenHandler) GetToken(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, echo.Map{
 			// "message": "Could not create token",
-			"message": err,
+			"message": err.Error(),
 		})
 	}
 
@@ -69,19 +69,30 @@ func (t *TokenHandler) RefreshToken(c echo.Context) error {
 			"message": "ID should be in UUID format",
 		})
 	}
+	atTokenString, err := retrieveToken("access", c)
+	if err != nil {
+		if strings.Contains(err.Error(), "Empty token") {
+			return c.JSON(http.StatusBadRequest, echo.Map{
+				"message": "No access token provided",
+			})
+		}
+		return c.JSON(http.StatusBadRequest, echo.Map{
+			"message": "Wrong access token format" + err.Error(),
+		})
+	}
 	rtTokenString, err := retrieveToken("refresh", c)
 	if err != nil {
 		if strings.Contains(err.Error(), "Empty token") {
 			return c.JSON(http.StatusBadRequest, echo.Map{
-				"message": "No token provided",
+				"message": "No refresh token provided",
 			})
 		}
 		return c.JSON(http.StatusBadRequest, echo.Map{
-			"message": "Wrong token format",
+			"message": "Wrong refresh token format",
 		})
 	}
 
-	atToken, err := extractToken("access", userID, rtTokenString)
+	atToken, err := extractToken("access", userID, atTokenString)
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, echo.Map{
 			"message": "Could not extract access token",
@@ -115,10 +126,22 @@ func (t *TokenHandler) RefreshToken(c echo.Context) error {
 		})
 	}
 
-	newAtTokenString, newRtTokenString, err := t.tokenHelper.RefreshToken(userID, rtTokenString)
+	rtClaims := rtToken.Claims.(jwt.MapClaims)
+
+	newAtTokenString, newRtTokenString, err := t.tokenHelper.RefreshToken(userID, rtClaims["token_id"].(string))
 	if err != nil {
+		if strings.Contains(err.Error(), "context") {
+			return c.JSON(http.StatusInternalServerError, echo.Map{
+				"message": "Server internal error",
+			})
+		}
+		if strings.Contains(err.Error(), "no documents") {
+			return c.JSON(http.StatusBadRequest, echo.Map{
+				"message": "Refresh token is invalid",
+			})
+		}
 		return c.JSON(http.StatusUnprocessableEntity, echo.Map{
-			"message": "Error at /refresh" + err.Error(),
+			"message": "Error at /token/refresh",
 		})
 	}
 
@@ -150,17 +173,17 @@ func retrieveToken(tokenType string, c echo.Context) (string, error) {
 	if tokenType == "access" {
 		tokenString = c.FormValue("access_token")
 	} else {
-		tokenString = c.FormValue("refresh_token")
+		tokenStringB64Encoded := c.FormValue("refresh_token")
+		tokenByte, err := base64.StdEncoding.DecodeString(tokenStringB64Encoded)
+		if err != nil {
+			return "", err
+		}
+		tokenString = string(tokenByte)
 	}
 	if tokenString == "" {
 		return "", errors.New("Empty token")
 	}
-
-	rtDecoded, err := base64.StdEncoding.DecodeString(tokenString)
-	if err != nil {
-		return "", errors.New("Wrong base64 string")
-	}
-	return string(rtDecoded), nil
+	return string(tokenString), nil
 }
 
 func extractToken(tokenType string, userID, tokenString string) (*jwt.Token, error) {

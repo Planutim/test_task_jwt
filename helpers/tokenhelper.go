@@ -3,6 +3,7 @@ package helpers
 import (
 	"context"
 	"crypto/md5"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -19,6 +20,7 @@ type TokenHelper struct {
 
 type RefreshToken struct {
 	UserID       string `bson:"user_id"`
+	TokenID      string `bson:"token_id"`
 	EncodedToken string `bson:"encoded_token"`
 }
 
@@ -59,7 +61,7 @@ func (th *TokenHelper) CreateToken(userID string) (AToken string, RToken string,
 		return "", "", err
 	}
 	//Save rt to MongoDB
-	err = saveRtToken(userID, rtEncoded)
+	err = saveRtToken(userID, md5hashStr, rtEncoded)
 	if err != nil {
 		return "", "", err
 	}
@@ -69,33 +71,54 @@ func (th *TokenHelper) CreateToken(userID string) (AToken string, RToken string,
 
 //RefreshToken checks and refreshed token for specified userID and refresh token
 func (th *TokenHelper) RefreshToken(userID, rtTokenString string) (newAToken string, newRToken string, err error) {
-	
+	//delete previous token
+	err = deletePreviousToken(userID, rtTokenString)
+	if err != nil {
+		return "", "", err
+	}
 	//if all good, return new pair of tokens
 	return th.CreateToken(userID)
 }
 
-func deletePreviousToken(userID string) (string, error) {
+func deletePreviousToken(userID, rtTokenString string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	client, err := mongo.Connect(ctx, options.Client().ApplyURI(os.Getenv("MONGODB_URI")))
 	if err != nil {
-		return "", err
+		return err
 	}
 	defer client.Disconnect(ctx)
 
 	db := client.Database(os.Getenv("MONGODB_DATABASE"))
 	tokenCollection := db.Collection("refresh_tokens")
 
-	findResult, err := tokenCollection.Find(ctx, bson.M{
-		"user_id": userID,
+	findResult := tokenCollection.FindOne(ctx, bson.M{
+		"user_id":  userID,
+		"token_id": rtTokenString,
+	})
+	if errors.Is(findResult.Err(), mongo.ErrNoDocuments) {
+		//not found
+		return findResult.Err()
+	}
+	if findResult.Err() != nil {
+		return findResult.Err()
+	}
+	//delete result
+	deleteResult, err := tokenCollection.DeleteOne(ctx, bson.M{
+		"user_id":  userID,
+		"token_id": rtTokenString,
 	})
 	if err != nil {
-
+		return err
 	}
+	if deleteResult.DeletedCount != 1 {
+		return errors.New("Could not delete")
+	}
+	return nil
 }
 
-func saveRtToken(userID, encodedTokenString string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func saveRtToken(userID, tokenID, encodedTokenString string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	client, err := mongo.Connect(ctx, options.Client().ApplyURI(os.Getenv("MONGODB_URI")))
 	if err != nil {
@@ -107,7 +130,8 @@ func saveRtToken(userID, encodedTokenString string) error {
 
 	refreshToken := &RefreshToken{
 		UserID:       userID,
-		EncodedToken: string(encodedTokenString),
+		TokenID:      tokenID,
+		EncodedToken: encodedTokenString,
 	}
 	_, err = tokenCollection.InsertOne(ctx, refreshToken)
 	if err != nil {
